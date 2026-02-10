@@ -1,51 +1,50 @@
 // src/components/GuestForm.jsx
 import { useState, useEffect } from 'react';
 import { propertyThemes } from '../utils/themes';
-// Asegúrate de que la ruta sea correcta para tu lógica de prioridad
-import { analyzePriority } from '../utils/priorityLogic'; 
+// Importamos la nueva función que devuelve { priority, category, label, color }
+import { analyzeRequest } from '../utils/priorityLogic'; 
 import { createTask } from '../services/clickUpClient'; 
-import { supabase } from '../services/supabaseClient'; // Asegúrate de tener este cliente configurado
+import { supabase } from '../services/supabaseClient'; 
 
 export default function GuestForm() {
   // 1. Estado de la Propiedad (Controla el Tema)
   const [propertyKey, setPropertyKey] = useState('LuxuryPenthouse');
   
-  // 2. Estado del Formulario
+  // 2. Estado del Formulario (YA NO INCLUYE CATEGORY)
   const [formData, setFormData] = useState({
     guestName: '',
-    category: 'General',
     description: ''
   });
 
-  // 3. Estado de Lógica (Urgencia Calculada)
-  const [urgencyInfo, setUrgencyInfo] = useState({ label: 'Normal', color: 'blue', priority: 3 });
-  const [status, setStatus] = useState('idle'); // idle | submitting | success | error
+  // 3. Estado del Análisis Automático (Categoría + Prioridad)
+  const [analysis, setAnalysis] = useState({ 
+    priority: 4, 
+    label: 'Low', 
+    color: 'gray', 
+    category: 'General' 
+  });
+  
+  const [status, setStatus] = useState('idle');
 
   // Validaciones de seguridad para el tema
   const theme = propertyThemes?.[propertyKey];
 
-  // Si no carga el tema, mostramos error visual
   if (!theme) {
     return <div style={{ color: 'red', padding: 20 }}>Error: Theme '{propertyKey}' not found.</div>;
   }
 
   const styles = theme.styles || {};
 
-  // EFFECT: Recalcular urgencia cuando cambia la descripción o categoría
+  // EFFECT: Analizar descripción en tiempo real
   useEffect(() => {
-    // Si tienes la función analyzePriority, úsala. Si no, usa un fallback simple.
-    if (typeof analyzePriority === 'function') {
-      const priorityLevel = analyzePriority(formData.category, formData.description);
-      // Mapeo simple para visualización (puedes ajustarlo según tu lógica)
-      let label = 'Low';
-      let color = 'white';
-      if (priorityLevel === 1) { label = 'Urgent'; color = 'red'; }
-      else if (priorityLevel === 2) { label = 'High'; color = 'orange'; }
-      else if (priorityLevel === 3) { label = 'Normal'; color = 'blue'; }
-      
-      setUrgencyInfo({ priority: priorityLevel, label, color });
+    // Si hay descripción, analizamos. Si no, valores por defecto.
+    if (formData.description) {
+      const result = analyzeRequest(formData.description);
+      setAnalysis(result);
+    } else {
+      setAnalysis({ priority: 4, label: 'Low', color: 'gray', category: 'General' });
     }
-  }, [formData.category, formData.description]);
+  }, [formData.description]);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -56,36 +55,39 @@ export default function GuestForm() {
     setStatus('submitting');
 
     try {
-      // 1. Guardar en Supabase (Opcional: Si falla, no detenemos el proceso de ClickUp)
       let supabaseId = 'N/A';
+      
+      // 1. Guardar en Supabase
       if (supabase) {
         const { data, error } = await supabase
           .from('requests')
           .insert([{ 
             guest_name: formData.guestName,
-            category: formData.category,
-            description: `[${formData.category}] ${formData.description}`,
-            urgency: urgencyInfo.label,
-            property_type: theme.name
+            property_type: theme.name, // Nombre correcto de columna
+            // Guardamos la categoría automática dentro de la descripción
+            description: formData.description,
+            category: analysis.category, // Guardamos la categoría detectada
+            urgency: analysis.label, // Guardamos el texto (ej. "Urgent")
+            status: 'pending'
           }])
-          .select()
+          .select() // Requiere política pública de SELECT
           .single();
         
         if (!error && data) supabaseId = data.id;
-        else console.warn("Supabase insert warning:", error);
+        else if (error) console.warn("Supabase insert warning:", error);
       }
 
       // 2. Crear Tarea en ClickUp
       const payload = {
-        name: `[${theme.name}] ${formData.category}: ${formData.guestName}`,
-        description: `${formData.description}\n\n---\nUrgency Level: ${urgencyInfo.priority}\nRef ID: ${supabaseId}`,
-        priority: urgencyInfo.priority
+        name: `[${theme.name}] ${analysis.category}: ${formData.guestName}`,
+        description: `${formData.description}\n\n---\nAuto-Category: ${analysis.category}\nUrgency: ${analysis.label}\nRef ID: ${supabaseId}`,
+        priority: analysis.priority // Enviamos el entero (1-4)
       };
 
       await createTask(payload); 
       
       setStatus('success');
-      setFormData({ guestName: '', category: 'General', description: '' }); // Reset form
+      setFormData({ guestName: '', description: '' }); // Reset form
     } catch (err) {
       console.error(err);
       setStatus('error');
@@ -158,6 +160,7 @@ export default function GuestForm() {
               value={formData.guestName}
               onChange={handleChange}
               required
+              placeholder="John Doe"
               style={{
                 width: '100%',
                 padding: '12px',
@@ -170,47 +173,31 @@ export default function GuestForm() {
             />
           </div>
 
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Category</label>
-            <select
-              name="category"
-              value={formData.category}
-              onChange={handleChange}
-              style={{
-                width: '100%',
-                padding: '12px',
-                borderRadius: styles.borderRadius,
-                backgroundColor: propertyKey === 'LuxuryPenthouse' ? '#333' : '#fff',
-                color: propertyKey === 'LuxuryPenthouse' ? '#fff' : '#000',
-                boxSizing: 'border-box'
-              }}
-            >
-              <option value="General">General</option>
-              <option value="Maintenance">Maintenance</option>
-              <option value="Housekeeping">Housekeeping</option>
-              <option value="Security">Security</option>
-            </select>
-          </div>
+          {/* ELIMINADO EL SELECT MANUAL DE CATEGORÍA */}
 
           <div>
             <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
               Description 
-              <span style={{ float: 'right', fontSize: '0.8rem', color: urgencyInfo.color, fontWeight: 'bold' }}>
-                Priority: {urgencyInfo.label}
-              </span>
+              {/* Indicadores visuales automáticos */}
+              <div style={{ float: 'right', fontSize: '0.8rem', display:'flex', gap:'15px' }}>
+                <span style={{ color: analysis.color }}>
+                   Priority: <strong>{analysis.label}</strong>
+                </span>
+              </div>
             </label>
             <textarea
               name="description"
               rows="4"
               value={formData.description}
               onChange={handleChange}
-              placeholder="Describe request..."
+              placeholder="Describe your request (e.g., 'The wifi is slow')"
               required
               style={{
                 width: '100%',
                 padding: '12px',
                 borderRadius: styles.borderRadius,
-                border: `2px solid ${urgencyInfo.priority === 1 ? 'red' : '#ccc'}`,
+                // Borde cambia de color según urgencia
+                border: `2px solid ${analysis.priority === 1 ? 'red' : '#ccc'}`,
                 backgroundColor: propertyKey === 'LuxuryPenthouse' ? '#333' : '#fff',
                 color: propertyKey === 'LuxuryPenthouse' ? '#fff' : '#000',
                 boxSizing: 'border-box',
